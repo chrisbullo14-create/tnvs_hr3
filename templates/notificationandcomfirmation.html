@@ -1,0 +1,155 @@
+<?php
+include('db_connection.php');
+session_start();
+
+// CSRF token generation
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+$error = "";
+
+// Handle Leave Request Submission
+if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_POST['submitLeaveRequest'])) {
+    if (!hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+        die("CSRF validation failed.");
+    }
+
+    $employeeId = intval($_POST['employeeId']);
+    $leaveType = trim($_POST['leaveType']);
+    $startDate = $_POST['startDate'];
+    $endDate = $_POST['endDate'];
+    $reason = htmlspecialchars(trim($_POST['reason']));
+    $remarks = htmlspecialchars(trim($_POST['remarks'] ?? ""));
+
+    // Check if the employee exists
+    $stmt = $conn->prepare("SELECT COUNT(*) FROM test_employees WHERE employee_id = ?");
+    $stmt->bind_param("i", $employeeId);
+    $stmt->execute();
+    $stmt->bind_result($exists);
+    $stmt->fetch();
+    $stmt->close();
+
+    if ($exists == 0) {
+        $error = "Employee does not exist.";
+    } else {
+        // Insert leave request
+        $stmt = $conn->prepare("INSERT INTO leave_requests (employee_id, leave_type, start_date, end_date, reason, remarks, leave_status, request_date) 
+        VALUES (?, ?, ?, ?, ?, ?, 'Pending', NOW())");
+        $stmt->bind_param("isssss", $employeeId, $leaveType, $startDate, $endDate, $reason, $remarks);
+        if ($stmt->execute()) {
+            $leaveId = $stmt->insert_id;
+            $stmt->close();
+
+            // Insert Notification
+            $stmt = $conn->prepare("INSERT INTO notification_and_confirmation (leave_id, employee_id, notification_type, notification_status) 
+            VALUES (?, ?, 'Leave Request Submitted', 'Unread')");
+            $stmt->bind_param("ii", $leaveId, $employeeId);
+            if ($stmt->execute()) {
+                $stmt->close();
+                // Redirect or confirmation message
+                header("Location: " . $_SERVER['PHP_SELF']);
+                exit;
+            } else {
+                $error = "Notification creation failed: " . $stmt->error;
+            }
+        } else {
+            $error = "Leave request submission failed: " . $stmt->error;
+        }
+    }
+}
+
+// Fetch all notifications for the logged-in user (Employee)
+$employeeId = 1; // Assuming the logged-in employee's ID is 1. Replace with $_SESSION['employee_id'] if needed.
+
+$notifications = [];
+$stmt = $conn->prepare("SELECT nac.notification_id, nac.notification_type, nac.notification_status, lr.leave_type, lr.start_date, lr.end_date
+    FROM notification_and_confirmation nac
+    LEFT JOIN leave_requests lr ON nac.leave_id = lr.leave_id
+    WHERE nac.employee_id = ?
+    ORDER BY nac.notification_id DESC");
+$stmt->bind_param("i", $employeeId);
+$stmt->execute();
+$result = $stmt->get_result();
+while ($row = $result->fetch_assoc()) {
+    $notifications[] = $row;
+}
+$stmt->close();
+?>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Leave Notifications</title>
+    <link href="vendor/fontawesome-free/css/all.min.css" rel="stylesheet">
+    <link href="css/sb-admin-2.min.css" rel="stylesheet">
+</head>
+<body id="page-top">
+<div id="wrapper">
+    <ul class="navbar-nav bg-gradient-primary sidebar sidebar-dark accordion" id="accordionSidebar">
+        <a class="sidebar-brand d-flex align-items-center justify-content-center" href="admin_dashboard.php">
+            <div class="sidebar-brand-icon"><i class="fas fa-calendar-check"></i></div>
+            <div class="sidebar-brand-text mx-3">Leave System</div>
+        </a>
+        <hr class="sidebar-divider">
+        <li class="nav-item active">
+            <a class="nav-link" href="#"><i class="fas fa-fw fa-bell"></i><span>Notifications</span></a>
+        </li>
+        <hr class="sidebar-divider d-none d-md-block">
+    </ul>
+
+    <div id="content-wrapper" class="d-flex flex-column">
+        <div id="content">
+            <div class="container-fluid mt-4">
+                <h1 class="h3 mb-4 text-gray-800">Leave Notifications</h1>
+
+                <?php if ($error): ?>
+                    <div class="alert alert-danger"><?= $error ?></div>
+                <?php endif; ?>
+
+                <div class="card shadow mb-4">
+                    <div class="card-header bg-info text-white">Notifications</div>
+                    <div class="card-body">
+                        <table class="table table-bordered table-striped">
+                            <thead class="thead-dark">
+                            <tr>
+                                <th>ID</th>
+                                <th>Type</th>
+                                <th>Status</th>
+                                <th>Leave Type</th>
+                                <th>Start Date</th>
+                                <th>End Date</th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            <?php if ($notifications): ?>
+                                <?php foreach ($notifications as $notification): ?>
+                                    <tr>
+                                        <td><?= $notification['notification_id'] ?></td>
+                                        <td><?= $notification['notification_type'] ?></td>
+                                        <td><span class="badge badge-<?= $notification['notification_status'] == 'Unread' ? 'warning' : 'success' ?>">
+                                            <?= $notification['notification_status'] ?></span></td>
+                                        <td><?= $notification['leave_type'] ?></td>
+                                        <td><?= $notification['start_date'] ?></td>
+                                        <td><?= $notification['end_date'] ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <tr><td colspan="6" class="text-center">No notifications found.</td></tr>
+                            <?php endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="vendor/jquery/jquery.min.js"></script>
+<script src="vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+<script src="js/sb-admin-2.min.js"></script>
+</body>
+</html>
